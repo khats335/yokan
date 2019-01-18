@@ -1,93 +1,188 @@
-;----------------------------------------------------------------------------
-;				NES Sample1 "HELLO, WORLD!"
-;					Copyright (C) 2007, Tekepen
-;----------------------------------------------------------------------------
-.setcpu		"6502"
-.autoimport	on
+; iNES header
 
-; iNESヘッダ
 .segment "HEADER"
-	.byte	$4E, $45, $53, $1A	; "NES" Header
-	.byte	$02			; PRG-BANKS
-	.byte	$01			; CHR-BANKS
-	.byte	$01			; Vetrical Mirror
-	.byte	$00			; 
-	.byte	$00, $00, $00, $00	; 
-	.byte	$00, $00, $00, $00	; 
 
-.segment "STARTUP"
-; リセット割り込み
-.proc	Reset
-	sei
-	ldx	#$ff
-	txs
+INES_MAPPER = 0 ; 0 = NROM
+INES_MIRROR = 1 ; 0 = horizontal mirroring, 1 = vertical mirroring
+INES_SRAM   = 0 ; 1 = battery backed SRAM at $6000-7FFF
 
-; スクリーンオフ
-	lda	#$00
-	sta	$2000
-	sta	$2001
+.byte 'N', 'E', 'S', $1A ; ID
+.byte $02 ; 16k PRG chunk count
+.byte $01 ; 8k CHR chunk count
+.byte INES_MIRROR | (INES_SRAM << 1) | ((INES_MAPPER & $f) << 4)
+.byte (INES_MAPPER & %11110000)
+.byte $0, $0, $0, $0, $0, $0, $0, $0 ; padding
 
-; パレットテーブルへ転送(BG用のみ転送)
-	lda	#$3f
-	sta	$2006
-	lda	#$00
-	sta	$2006
-	ldx	#$00
-	ldy	#$10
-copypal:
-	lda	palettes, x
-	sta	$2007
-	inx
-	dey
-	bne	copypal
+; CHR ROM
 
-; ネームテーブルへ転送(画面の中央付近)
-	lda	#$21
-	sta	$2006
-	lda	#$c9
-	sta	$2006
-	ldx	#$00
-	ldy	#$0c		; 12文字表示
-copymap:
-	lda	string, x
-	sta	$2007
-	inx
-	dey
-	bne	copymap
+.segment "CHARS"
+.incbin "yokan.chr"
 
-; スクロール設定
-	lda	#$00
-	sta	$2005
-	sta	$2005
-
-; スクリーンオン
-	lda	#$08
-	sta	$2000
-	lda	#$1e
-	sta	$2001
-
-; 無限ループ
-mainloop:
-	jmp	mainloop
-.endproc
-
-; パレットテーブル
-palettes:
-	.byte	$0f, $00, $10, $20
-	.byte	$0f, $06, $16, $26
-	.byte	$0f, $08, $18, $28
-	.byte	$0f, $0a, $1a, $2a
-
-; 表示文字列
-string:
-;	.byte	"HELLO, WORLD!"
-	.byte	$a5, $82, $81, $ad, $85, $ad, $a7, $20, $a5, $82, $85, $ad
+; vectors placed at top 6 bytes of memory area
 
 .segment "VECTORS"
-	.word	$0000
-	.word	Reset
-	.word	$0000
+.word nmi
+.word reset
+.word irq
 
-; パターンテーブル
-.segment "CHARS"
-	.incbin	"yokan.chr"
+; reset routine
+
+.segment "STARTUP"
+reset:
+	sei       ; mask interrupts
+	lda #0
+	sta $2000 ; disable NMI
+	sta $2001 ; disable rendering
+	sta $4015 ; disable APU sound
+	sta $4010 ; disable DMC IRQ
+	lda #$40
+	sta $4017 ; disable APU IRQ
+	cld       ; disable decimal mode
+	ldx #$FF
+	txs       ; initialize stack
+	; wait for first vblank
+	bit $2002
+	:
+		bit $2002
+		bpl :-
+	; clear all RAM to 0
+	lda #0
+	ldx #0
+	:
+		sta $0000, X
+		sta $0100, X
+		sta $0200, X
+		sta $0300, X
+		sta $0400, X
+		sta $0500, X
+		sta $0600, X
+		sta $0700, X
+		inx
+		bne :-
+	; place all sprites offscreen at Y=255
+	lda #255
+	ldx #0
+	:
+		sta oam, X
+		inx
+		inx
+		inx
+		inx
+		bne :-
+	; wait for second vblank
+	:
+		bit $2002
+		bpl :-
+	; NES is initialized, ready to begin!
+	; enable the NMI for graphical updates, and jump to our main program
+	lda #%10010000
+	sta $2000
+	jmp main
+
+;
+; nmi routine
+;
+
+.segment "ZEROPAGE"
+nmi_lock:       .res 1 ; prevents NMI re-entry
+nmi_count:      .res 1 ; is incremented every NMI
+nmi_ready:      .res 1 ; set to 1 to push a PPU frame update, 2 to turn rendering off next NMI
+
+.segment "OAM"
+oam: .res 256        ; sprite OAM data to be uploaded by DMA
+
+.segment "CODE"
+nmi:
+	; save registers
+	pha
+	txa
+	pha
+	tya
+	pha
+	; prevent NMI re-entry
+	lda nmi_lock
+	beq :+
+		jmp @nmi_end
+	:
+	lda #1
+	sta nmi_lock
+	; increment frame counter
+	inc nmi_count
+	;
+	lda nmi_ready
+	bne :+ ; nmi_ready == 0 not ready to update PPU
+		jmp @ppu_update_end
+	:
+	cmp #2 ; nmi_ready == 2 turns rendering off
+	bne :+
+		lda #%00000000
+		sta $2001
+		ldx #0
+		stx nmi_ready
+		jmp @ppu_update_end
+	:
+	; sprite OAM DMA
+	ldx #0
+	stx $2003
+	lda #>oam
+	sta $4014
+
+@ppu_update_end:
+	; if this engine had music/sound, this would be a good place to play it
+	; unlock re-entry flag
+	lda #0
+	sta nmi_lock
+@nmi_end:
+	; restore registers and return
+	pla
+	tay
+	pla
+	tax
+	pla
+	rti
+
+; irq
+
+.segment "CODE"
+irq:
+	rti
+
+; main
+
+.segment "CODE"
+main:
+	; setup 
+
+	; ; パレットテーブル設定
+	; lda	#$3f
+	; sta	$2006
+	; lda	#$10
+	; sta	$2006
+	; ldx	#$00
+	; ldy	#$10
+	; lda	#$00
+	; sta	$2007
+	; lda	#$14
+	; sta	$2007
+	; lda	#$20
+	; sta	$2007
+	; lda	#$01
+	; sta	$2007
+
+	; ; OAM設定
+	; lda #$40
+	; ldx #$0
+	; sta oam, X
+	; inx
+	; lda #$00
+	; sta oam, X
+	; inx
+	; lda #$00
+	; sta oam, X
+	; inx
+	; lda #$40
+	; sta oam, X
+
+	; main loop
+@loop:
+	jmp @loop

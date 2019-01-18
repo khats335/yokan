@@ -11,7 +11,7 @@ OBJECTS	=	$(CSOURCES:.c=.o) $(ASMSOURCES:.asm=.o)
 LIBRARIES =
 #-------------------------------------------------------------------------------
 all :	$(OBJECTS) $(LIBRARIES)
-	LD65 -o yokan.nes --config nes.cfg --obj $(OBJECTS)
+	LD65 -o yokan.nes --config yokan.cfg --obj $(OBJECTS)
 
 .SUFFIXES : .asm .o
 
