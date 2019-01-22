@@ -77,6 +77,8 @@ reset:
 	; enable the NMI for graphical updates, and jump to our main program
 	lda #%10010000
 	sta $2000
+	lda #%00011110
+	sta $2001
 	jmp main
 
 ;
@@ -87,6 +89,10 @@ reset:
 nmi_lock:       .res 1 ; prevents NMI re-entry
 nmi_count:      .res 1 ; is incremented every NMI
 nmi_ready:      .res 1 ; set to 1 to push a PPU frame update, 2 to turn rendering off next NMI
+jicho_x:        .res 1
+jicho_y:        .res 1
+jicho_type:     .res 1
+pad:            .res 2
 
 .segment "OAM"
 oam: .res 256        ; sprite OAM data to be uploaded by DMA
@@ -124,7 +130,7 @@ nmi:
 	; sprite OAM DMA
 	ldx #0
 	stx $2003
-	lda #>oam
+	lda #2
 	sta $4014
 
 @ppu_update_end:
@@ -132,6 +138,118 @@ nmi:
 	; unlock re-entry flag
 	lda #0
 	sta nmi_lock
+
+
+	; コントローラ読み込み
+	lda #1
+	sta $4016
+	lsr ; A ← 0
+	tax ; X ← 0
+	sta $4016
+	ldy #8
+	:
+		pha
+		lda $4016, X
+		and #%00000011 ; Pad3(or4) & Pad1(or2)
+		cmp #%00000001
+		pla
+		rol
+		dey
+		bne :-
+	sta pad, X
+
+	lda pad
+	and #%00000001
+	beq :+
+	inc jicho_x
+	lda #0
+	sta jicho_type
+	:
+	lda pad
+	and #%00000010
+	beq :+
+	dec jicho_x
+	lda #1
+	sta jicho_type
+	:
+
+	; ; OAMに設定
+	; 次長
+	lda jicho_type
+	asl
+	asl
+	asl
+	tay
+	lda jicho_y
+	ldx #0
+	sta oam, X
+	inx
+	lda jicho_pattern, Y
+	iny
+	sta oam, X
+	inx
+	lda jicho_pattern, Y
+	iny
+	sta oam, X
+	inx
+	lda jicho_x
+	sta oam, X
+	inx
+	;
+	lda jicho_y
+	sta oam, X
+	inx
+	lda jicho_pattern, Y
+	iny
+	sta oam, X
+	inx
+	lda jicho_pattern, Y
+	iny
+	sta oam, X
+	inx
+	lda jicho_x
+	clc
+	adc #8
+	sta oam, X
+	inx
+	;
+	lda jicho_y
+	clc
+	adc #8
+	sta oam, X
+	inx
+	lda jicho_pattern, Y
+	iny
+	sta oam, X
+	inx
+	lda jicho_pattern, Y
+	iny
+	sta oam, X
+	inx
+	lda jicho_x
+	sta oam, X
+	inx
+	;
+	lda jicho_y
+	clc
+	adc #8
+	sta oam, X
+	inx
+	lda jicho_pattern, Y
+	iny
+	sta oam, X
+	inx
+	lda jicho_pattern, Y
+	iny
+	sta oam, X
+	inx
+	lda jicho_x
+	clc
+	adc #8
+	sta oam, X
+	inx
+
+
 @nmi_end:
 	; restore registers and return
 	pla
@@ -147,42 +265,62 @@ nmi:
 irq:
 	rti
 
+ppu_update:
+	lda #1
+	sta nmi_ready
+	:
+		lda nmi_ready
+		bne :-
+	rts
+
 ; main
 
 .segment "CODE"
 main:
 	; setup 
 
-	; ; パレットテーブル設定
-	; lda	#$3f
-	; sta	$2006
-	; lda	#$10
-	; sta	$2006
-	; ldx	#$00
-	; ldy	#$10
-	; lda	#$00
-	; sta	$2007
-	; lda	#$14
-	; sta	$2007
-	; lda	#$20
-	; sta	$2007
-	; lda	#$01
-	; sta	$2007
+	;; パレットテーブル設定
+	; BG
+	lda	#$3f
+	sta	$2006
+	lda	#$00
+	sta	$2006
+	ldy	#$10
+	:
+		lda	#$0C
+		sta	$2007
+		dey
+		bne	:-
+	; OBJ
+	lda	#$3f
+	sta	$2006
+	lda	#$10
+	sta	$2006
+	lda	#$0C
+	sta	$2007
+	lda	#$14
+	sta	$2007
+	lda	#$20
+	sta	$2007
+	lda	#$01
+	sta	$2007
 
-	; ; OAM設定
-	; lda #$40
-	; ldx #$0
-	; sta oam, X
-	; inx
-	; lda #$00
-	; sta oam, X
-	; inx
-	; lda #$00
-	; sta oam, X
-	; inx
-	; lda #$40
-	; sta oam, X
+	;;
+	lda #120
+	sta jicho_x
+	lda #160
+	sta jicho_y
+	lda #0
+	sta jicho_type
+
+	lda #1
+	sta nmi_ready
 
 	; main loop
 @loop:
 	jmp @loop
+
+; 次長パターン
+jicho_pattern:
+	.byte	$00, $00, $01, $00, $10, $00, $11, $00
+	.byte	$01, $40, $00, $40, $11, $40, $10, $40
