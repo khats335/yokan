@@ -89,10 +89,12 @@ reset:
 nmi_lock:       .res 1 ; prevents NMI re-entry
 nmi_count:      .res 1 ; is incremented every NMI
 nmi_ready:      .res 1 ; set to 1 to push a PPU frame update, 2 to turn rendering off next NMI
-jicho_x:        .res 1
-jicho_y:        .res 1
-jicho_type:     .res 1
-pad:            .res 2
+jicho_x:        .res 1 ; 次長X座標
+walk_count:     .res 1 ; アニメーション用歩行カウンタ
+jicho_y:        .res 1 ; 次長Y座標
+jicho_type:     .res 1 ; 表示中キャラクタパターン
+pad:            .res 2 ; コントローラ入力値
+work1:          .res 1
 
 .segment "OAM"
 oam: .res 256        ; sprite OAM data to be uploaded by DMA
@@ -158,44 +160,105 @@ nmi:
 		bne :-
 	sta pad, X
 
+	; 右移動
 	lda pad
 	and #%00000001
-	beq :+
+	beq @exit_move_r
 	inc jicho_x
+	lda jicho_type
+	cmp #0
+	beq :+
+	cmp #2
+	beq :+
 	lda #0
 	sta jicho_type
+	lda #0
+	sta walk_count
+	jmp @exit_move_r
 	:
+	; パターン切り替え判定
+	inc walk_count
+	lda walk_count
+	cmp #8
+	bne @exit_move_r
+	; パターン切り替え
+	lda #0
+	sta walk_count
+	lda jicho_type
+	cmp #0
+	beq :+
+	lda #0
+	sta jicho_type
+	jmp @exit_move_r
+	:
+	lda #2
+	sta jicho_type
+@exit_move_r:
+
+	; 左移動
 	lda pad
 	and #%00000010
-	beq :+
+	beq @exit_move_l
 	dec jicho_x
+	lda jicho_type
+	cmp #1
+	beq :+
+	cmp #3
+	beq :+
 	lda #1
 	sta jicho_type
+	lda #0
+	sta walk_count
+	jmp @exit_move_l
 	:
+	; パターン切り替え判定
+	inc walk_count
+	lda walk_count
+	cmp #8
+	bne @exit_move_l
+	; パターン切り替え
+	lda #0
+	sta walk_count
+	lda jicho_type
+	cmp #1
+	beq :+
+	lda #1
+	sta jicho_type
+	jmp @exit_move_l
+	:
+	lda #3
+	sta jicho_type
+@exit_move_l:
 
 	; ; OAMに設定
 	; 次長
 	lda jicho_type
 	asl
 	asl
-	asl
-	tay
+	clc
+	adc jicho_type
+	tay ; Y ← jicho_type x 5
+	; 反転設定
+	lda jicho_pattern, Y
+	iny
+	sta work1
+	; 左上
 	lda jicho_y
 	ldx #0
-	sta oam, X
+	sta oam, X ; Y座標
 	inx
 	lda jicho_pattern, Y
 	iny
-	sta oam, X
+	sta oam, X ; パターン
 	inx
-	lda jicho_pattern, Y
-	iny
-	sta oam, X
+	lda work1
+	and #%11000000
+	sta oam, X ; 属性
 	inx
 	lda jicho_x
-	sta oam, X
+	sta oam, X ; X座標
 	inx
-	;
+	; 右上
 	lda jicho_y
 	sta oam, X
 	inx
@@ -203,8 +266,10 @@ nmi:
 	iny
 	sta oam, X
 	inx
-	lda jicho_pattern, Y
-	iny
+	lda work1
+	asl
+	asl
+	and #%11000000
 	sta oam, X
 	inx
 	lda jicho_x
@@ -212,24 +277,7 @@ nmi:
 	adc #8
 	sta oam, X
 	inx
-	;
-	lda jicho_y
-	clc
-	adc #8
-	sta oam, X
-	inx
-	lda jicho_pattern, Y
-	iny
-	sta oam, X
-	inx
-	lda jicho_pattern, Y
-	iny
-	sta oam, X
-	inx
-	lda jicho_x
-	sta oam, X
-	inx
-	;
+	; 左下
 	lda jicho_y
 	clc
 	adc #8
@@ -239,8 +287,29 @@ nmi:
 	iny
 	sta oam, X
 	inx
+	lda work1
+	asl
+	asl
+	and #%11000000
+	sta oam, X
+	inx
+	lda jicho_x
+	sta oam, X
+	inx
+	; 右下
+	lda jicho_y
+	clc
+	adc #8
+	sta oam, X
+	inx
 	lda jicho_pattern, Y
 	iny
+	sta oam, X
+	inx
+	lda work1
+	asl
+	asl
+	and #%11000000
 	sta oam, X
 	inx
 	lda jicho_x
@@ -296,7 +365,7 @@ main:
 	sta	$2006
 	lda	#$10
 	sta	$2006
-	lda	#$0C
+	lda	#$00
 	sta	$2007
 	lda	#$14
 	sta	$2007
@@ -322,10 +391,8 @@ main:
 
 ; 次長パターン
 jicho_pattern:
-	.byte	$00, $00, $01, $00, $10, $00, $11, $00 ; 立ち 右向き
-	.byte	$01, $40, $00, $40, $11, $40, $10, $40 ; 立ち 左向き
-	.byte	$02, $00, $03, $00, $12, $00, $13, $00 ; 歩行1 右向き
-	.byte	$03, $40, $02, $40, $13, $40, $12, $40 ; 歩行1 左向き
-	.byte	$04, $00, $05, $00, $14, $00, $15, $00 ; 歩行2 右向き
-	.byte	$05, $40, $04, $40, $15, $40, $14, $40 ; 歩行2 左向き
-
+	; 反転指定, パターン1, パターン2, パターン3, パターン4
+	.byte	$00, $00, $01, $10, $11 ; つまようじ装備中移動(1) 右向き
+	.byte	$55, $01, $00, $11, $10 ; つまようじ装備中移動(1) 左向き
+	.byte	$00, $02, $03, $12, $13 ; つまようじ装備中移動(2) 右向き
+	.byte	$55, $03, $02, $13, $12 ; つまようじ装備中移動(2) 左向き
